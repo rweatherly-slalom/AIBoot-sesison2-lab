@@ -1,102 +1,80 @@
 const request = require('supertest');
-const { app, db } = require('../src/app');
+const { createApp } = require('../src/app');
 
-// Close the database connection after all tests
-afterAll(() => {
-  if (db) {
+describe('Task API Endpoints', () => {
+  let app;
+  let db;
+
+  beforeEach(() => {
+    const result = createApp({ dbPath: ':memory:' });
+    app = result.app;
+    db = result.db;
+  });
+
+  afterEach(() => {
     db.close();
-  }
-});
-
-// Test helpers
-const createItem = async (name = 'Temp Item to Delete') => {
-  const response = await request(app)
-    .post('/api/items')
-    .send({ name })
-    .set('Accept', 'application/json');
-
-  expect(response.status).toBe(201);
-  expect(response.body).toHaveProperty('id');
-  return response.body;
-};
-
-describe('API Endpoints', () => {
-  describe('GET /api/items', () => {
-    it('should return all items', async () => {
-      const response = await request(app).get('/api/items');
-
-      expect(response.status).toBe(200);
-      expect(Array.isArray(response.body)).toBe(true);
-      expect(response.body.length).toBeGreaterThan(0);
-
-      // Check if items have the expected structure
-      const item = response.body[0];
-      expect(item).toHaveProperty('id');
-      expect(item).toHaveProperty('name');
-      expect(item).toHaveProperty('created_at');
-    });
   });
 
-  describe('POST /api/items', () => {
-    it('should create a new item', async () => {
-      const newItem = { name: 'Test Item' };
-      const response = await request(app)
-        .post('/api/items')
-        .send(newItem)
-        .set('Accept', 'application/json');
-
-      expect(response.status).toBe(201);
-      expect(response.body).toHaveProperty('id');
-      expect(response.body.name).toBe(newItem.name);
-      expect(response.body).toHaveProperty('created_at');
+  it('creates and returns a task', async () => {
+    const response = await request(app).post('/api/tasks').send({
+      title: 'Finish bootcamp lab',
+      description: 'Implement TODO backend and frontend',
+      priority: 'high',
     });
 
-    it('should return 400 if name is missing', async () => {
-      const response = await request(app)
-        .post('/api/items')
-        .send({})
-        .set('Accept', 'application/json');
-
-      expect(response.status).toBe(400);
-      expect(response.body).toHaveProperty('error');
-      expect(response.body.error).toBe('Item name is required');
+    expect(response.status).toBe(201);
+    expect(response.body).toMatchObject({
+      title: 'Finish bootcamp lab',
+      description: 'Implement TODO backend and frontend',
+      priority: 'high',
+      completed: false,
     });
-
-    it('should return 400 if name is empty', async () => {
-      const response = await request(app)
-        .post('/api/items')
-        .send({ name: '' })
-        .set('Accept', 'application/json');
-
-      expect(response.status).toBe(400);
-      expect(response.body).toHaveProperty('error');
-      expect(response.body.error).toBe('Item name is required');
-    });
+    expect(response.body).toHaveProperty('id');
   });
 
-  describe('DELETE /api/items/:id', () => {
-    it('should delete an existing item', async () => {
-      const item = await createItem('Item To Be Deleted');
+  it('rejects task creation when title is missing', async () => {
+    const response = await request(app).post('/api/tasks').send({ priority: 'medium' });
 
-      const deleteResponse = await request(app).delete(`/api/items/${item.id}`);
-      expect(deleteResponse.status).toBe(200);
-      expect(deleteResponse.body).toEqual({ message: 'Item deleted successfully', id: item.id });
+    expect(response.status).toBe(400);
+    expect(response.body).toEqual({ error: 'Task title is required' });
+  });
 
-      const deleteAgain = await request(app).delete(`/api/items/${item.id}`);
-      expect(deleteAgain.status).toBe(404);
-      expect(deleteAgain.body).toHaveProperty('error', 'Item not found');
-    });
+  it('lists tasks using active and completed filters', async () => {
+    const first = await request(app).post('/api/tasks').send({ title: 'Active task' });
+    await request(app).post('/api/tasks').send({ title: 'Completed task' });
 
-    it('should return 404 when item does not exist', async () => {
-      const response = await request(app).delete('/api/items/999999');
-      expect(response.status).toBe(404);
-      expect(response.body).toHaveProperty('error', 'Item not found');
-    });
+    await request(app).patch(`/api/tasks/${first.body.id}/toggle`).send();
 
-    it('should return 400 for invalid id', async () => {
-      const response = await request(app).delete('/api/items/abc');
-      expect(response.status).toBe(400);
-      expect(response.body).toHaveProperty('error', 'Valid item ID is required');
-    });
+    const active = await request(app).get('/api/tasks?filter=active');
+    const completed = await request(app).get('/api/tasks?filter=completed');
+
+    expect(active.status).toBe(200);
+    expect(completed.status).toBe(200);
+    expect(active.body).toHaveLength(1);
+    expect(completed.body).toHaveLength(1);
+    expect(active.body[0].title).toBe('Completed task');
+    expect(completed.body[0].title).toBe('Active task');
+  });
+
+  it('updates a task', async () => {
+    const created = await request(app).post('/api/tasks').send({ title: 'Old title' });
+
+    const response = await request(app)
+      .put(`/api/tasks/${created.body.id}`)
+      .send({ title: 'New title', priority: 'low', completed: true });
+
+    expect(response.status).toBe(200);
+    expect(response.body.title).toBe('New title');
+    expect(response.body.priority).toBe('low');
+    expect(response.body.completed).toBe(true);
+  });
+
+  it('deletes a task', async () => {
+    const created = await request(app).post('/api/tasks').send({ title: 'Delete me' });
+
+    const response = await request(app).delete(`/api/tasks/${created.body.id}`);
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({ message: 'Task deleted successfully', id: created.body.id });
   });
 });
